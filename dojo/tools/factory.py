@@ -1,4 +1,5 @@
 from dojo.tools.burp.parser import BurpXmlParser
+from dojo.tools.burp_api.parser import BurpApiParser
 from dojo.tools.dsop.parser import DsopParser
 from dojo.tools.nessus.parser import NessusCSVParser, NessusXMLParser
 from dojo.tools.nmap.parser import NmapXMLParser
@@ -41,6 +42,7 @@ from dojo.tools.sonarqube_api.importer import SonarQubeApiImporter
 from dojo.tools.clair.parser import ClairParser
 from dojo.tools.mobsf.parser import MobSFParser
 from dojo.tools.aws_scout2.parser import AWSScout2Parser
+from dojo.tools.scout_suite.parser import ScoutSuiteParser
 from dojo.tools.aws_prowler.parser import AWSProwlerParser
 from dojo.tools.brakeman.parser import BrakemanScanParser
 from dojo.tools.spotbugs.parser import SpotbugsXMLParser
@@ -82,6 +84,7 @@ from dojo.tools.harbor_vulnerability.parser import HarborVulnerabilityParser
 from dojo.tools.github_vulnerability.parser import GithubVulnerabilityParser
 from dojo.tools.choctaw_hog.parser import ChoctawhogParser
 from dojo.tools.gitlab_sast.parser import GitlabSastReportParser
+from dojo.tools.gitlab_dep_scan.parser import GitlabDepScanReportParser
 from dojo.tools.yarn_audit.parser import YarnAuditParser
 from dojo.tools.bugcrowd.parser import BugCrowdCSVParser
 from dojo.tools.huskyci.parser import HuskyCIReportParser
@@ -93,6 +96,9 @@ from dojo.tools.drheader.parser import DrHeaderJSONParser
 from dojo.tools.checkov.parser import CheckovParser
 from dojo.tools.kubebench.parser import KubeBenchParser
 from dojo.tools.ort.parser import OrtParser
+from dojo.tools.sarif.parser import SarifParser
+from dojo.tools.ossindex_devaudit.parser import OssIndexDevauditParser
+from dojo.tools.scantist.parser import ScantistJSONParser
 
 
 __author__ = 'Jay Paz'
@@ -106,6 +112,8 @@ def import_parser_factory(file, test, active, verified, scan_type=None):
         parser = BurpXmlParser(file, test)
     elif scan_type == "Burp Enterprise Scan":
         parser = BurpEnterpriseHtmlParser(file, test)
+    elif scan_type == "Burp REST API":
+        parser = BurpApiParser(file, test)
     elif scan_type == "Nessus Scan":
         filename = file.name.lower()
         if filename.endswith("csv"):
@@ -198,6 +206,8 @@ def import_parser_factory(file, test, active, verified, scan_type=None):
         parser = MobSFParser(file, test)
     elif scan_type == 'AWS Scout2 Scan':
         parser = AWSScout2Parser(file, test)
+    elif scan_type == 'Scout Suite Scan':
+        parser = ScoutSuiteParser(file, test)
     elif scan_type == 'AWS Prowler Scan':
         parser = AWSProwlerParser(file, test)
     elif scan_type == 'Brakeman Scan':
@@ -276,6 +286,8 @@ def import_parser_factory(file, test, active, verified, scan_type=None):
         parser = ChoctawhogParser(file, test)
     elif scan_type == 'GitLab SAST Report':
         parser = GitlabSastReportParser(file, test)
+    elif scan_type == 'GitLab Dependency Scanning Report':
+        parser = GitlabDepScanReportParser(file, test)
     elif scan_type == 'Yarn Audit Scan':
         parser = YarnAuditParser(file, test)
     elif scan_type == 'BugCrowd Scan':
@@ -298,6 +310,12 @@ def import_parser_factory(file, test, active, verified, scan_type=None):
         parser = KubeBenchParser(file, test)
     elif scan_type == 'ORT evaluated model Importer':
         parser = OrtParser(file, test)
+    elif scan_type == 'SARIF':
+        parser = SarifParser(file, test)
+    elif scan_type == 'OssIndex Devaudit SCA Scan Importer':
+        parser = OssIndexDevauditParser(file, test)
+    elif scan_type == 'Scantist Scan':
+        parser = ScantistJSONParser(file, test)
     else:
         raise ValueError('Unknown Test Type')
 

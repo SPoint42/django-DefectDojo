@@ -12,6 +12,7 @@ env = environ.Env(
     DD_SITE_URL=(str, 'http://localhost:8080'),
     DD_DEBUG=(bool, False),
     DD_TEMPLATE_DEBUG=(bool, False),
+    DD_LOG_LEVEL=(str, ''),
     DD_DJANGO_METRICS_ENABLED=(bool, False),
     DD_LOGIN_REDIRECT_URL=(str, '/'),
     DD_DJANGO_ADMIN_ENABLED=(bool, False),
@@ -55,12 +56,13 @@ env = environ.Env(
     DD_CELERY_BROKER_HOST=(str, ''),
     DD_CELERY_BROKER_PORT=(int, -1),
     DD_CELERY_BROKER_PATH=(str, '/dojo.celerydb.sqlite'),
+    DD_CELERY_BROKER_PARAMS=(str, ''),
     DD_CELERY_TASK_IGNORE_RESULT=(bool, True),
     DD_CELERY_RESULT_BACKEND=(str, 'django-db'),
     DD_CELERY_RESULT_EXPIRES=(int, 86400),
     DD_CELERY_BEAT_SCHEDULE_FILENAME=(str, root('dojo.celery.beat.db')),
     DD_CELERY_TASK_SERIALIZER=(str, 'pickle'),
-    DD_CELERY_PASS_MODEL_BY_ID=(str, False),
+    DD_CELERY_PASS_MODEL_BY_ID=(str, True),
     DD_FOOTER_VERSION=(str, ''),
     # models should be passed to celery by ID, default is False (for now)
     DD_FORCE_LOWERCASE_TAGS=(bool, True),
@@ -76,6 +78,7 @@ env = environ.Env(
     DD_SECRET_KEY=(str, ''),
     DD_CREDENTIAL_AES_256_KEY=(str, '.'),
     DD_DATA_UPLOAD_MAX_MEMORY_SIZE=(int, 8388608),  # Max post size set to 8mb
+    DD_SOCIAL_AUTH_SHOW_LOGIN_FORM=(bool, True),  # do we show user/pass input
     DD_SOCIAL_AUTH_TRAILING_SLASH=(bool, True),
     DD_SOCIAL_AUTH_AUTH0_OAUTH2_ENABLED=(bool, False),
     DD_SOCIAL_AUTH_AUTH0_KEY=(str, ''),
@@ -97,6 +100,7 @@ env = environ.Env(
     DD_SOCIAL_AUTH_AZUREAD_TENANT_OAUTH2_TENANT_ID=(str, ''),
     DD_SOCIAL_AUTH_AZUREAD_TENANT_OAUTH2_RESOURCE=(str, 'https://graph.microsoft.com/'),
     DD_SOCIAL_AUTH_GITLAB_OAUTH2_ENABLED=(bool, False),
+    DD_SOCIAL_AUTH_GITLAB_PROJECT_AUTO_IMPORT=(bool, False),
     DD_SOCIAL_AUTH_GITLAB_KEY=(str, ''),
     DD_SOCIAL_AUTH_GITLAB_SECRET=(str, ''),
     DD_SOCIAL_AUTH_GITLAB_API_URL=(str, 'https://gitlab.com'),
@@ -151,11 +155,20 @@ env = environ.Env(
     DD_LOGGING_HANDLER=(str, 'console'),
     DD_ALERT_REFRESH=(bool, True),
     DD_DISABLE_ALERT_COUNTER=(bool, False),
-    DD_TAG_PREFETCHING=(bool, True)
+    # to disable deleting alerts per user set value to -1
+    DD_MAX_ALERTS_PER_USER=(int, 999),
+    DD_TAG_PREFETCHING=(bool, True),
+
+    # when enabled in sytem settings,  every minute a job run to delete excess duplicates
+    # we limit the amount of duplicates that can be deleted in a single run of that job
+    # to prevent overlapping runs of that job from occurrring
+    DD_DUPE_DELETE_MAX_PER_RUN=(int, 200),
+    # APIv1 is depreacted and will be removed at 2021-06-30
+    DD_LEGACY_API_V1_ENABLE=(bool, False),
 )
 
 
-def generate_url(scheme, double_slashes, user, password, host, port, path):
+def generate_url(scheme, double_slashes, user, password, host, port, path, params):
     result_list = []
     result_list.append(scheme)
     result_list.append(':')
@@ -174,6 +187,9 @@ def generate_url(scheme, double_slashes, user, password, host, port, path):
     if len(path) > 0 and path[0] != '/':
         result_list.append('/')
     result_list.append(path)
+    if len(params) > 0 and params[0] != '?':
+        result_list.append('?')
+    result_list.append(params)
     return ''.join(result_list)
 
 
@@ -224,6 +240,7 @@ TEST_RUNNER = env('DD_TEST_RUNNER')
 
 ALERT_REFRESH = env('DD_ALERT_REFRESH')
 DISABLE_ALERT_COUNTER = env("DD_DISABLE_ALERT_COUNTER")
+MAX_ALERTS_PER_USER = env("DD_MAX_ALERTS_PER_USER")
 
 TAG_PREFETCHING = env('DD_TAG_PREFETCHING')
 
@@ -352,9 +369,12 @@ SOCIAL_AUTH_PIPELINE = (
     'social_core.pipeline.social_auth.associate_user',
     'social_core.pipeline.social_auth.load_extra_data',
     'social_core.pipeline.user.user_details',
+    'dojo.pipeline.update_product_access',
 )
 
 CLASSIC_AUTH_ENABLED = True
+# Showing login form (form is not needed for external auth: OKTA, Google Auth, etc.)
+SHOW_LOGIN_FORM = env('DD_SOCIAL_AUTH_SHOW_LOGIN_FORM')
 
 SOCIAL_AUTH_STRATEGY = 'social_django.strategy.DjangoStrategy'
 SOCIAL_AUTH_STORAGE = 'social_django.models.DjangoStorage'
@@ -381,6 +401,7 @@ SOCIAL_AUTH_AZUREAD_TENANT_OAUTH2_TENANT_ID = env('DD_SOCIAL_AUTH_AZUREAD_TENANT
 SOCIAL_AUTH_AZUREAD_TENANT_OAUTH2_RESOURCE = env('DD_SOCIAL_AUTH_AZUREAD_TENANT_OAUTH2_RESOURCE')
 
 GITLAB_OAUTH2_ENABLED = env('DD_SOCIAL_AUTH_GITLAB_OAUTH2_ENABLED')
+GITLAB_PROJECT_AUTO_IMPORT = env('DD_SOCIAL_AUTH_GITLAB_PROJECT_AUTO_IMPORT')
 SOCIAL_AUTH_GITLAB_KEY = env('DD_SOCIAL_AUTH_GITLAB_KEY')
 SOCIAL_AUTH_GITLAB_SECRET = env('DD_SOCIAL_AUTH_GITLAB_SECRET')
 SOCIAL_AUTH_GITLAB_API_URL = env('DD_SOCIAL_AUTH_GITLAB_API_URL')
@@ -446,6 +467,8 @@ LOGIN_EXEMPT_URLS = (
     r'saml2/acs',
     r'empty_questionnaire/([\d]+)/answer'
 )
+
+LEGACY_API_V1_ENABLE = env('DD_LEGACY_API_V1_ENABLE')
 
 # ------------------------------------------------------------------------------
 # SECURITY DIRECTIVES
@@ -602,19 +625,17 @@ INSTALLED_APPS = (
     'dojo',
     'tastypie_swagger',
     'watson',
-    'tagging',
-    'custom_field',
+    'tagging',  # not used, but still needed for migration 0065_django_tagulous.py (v1.10.0)
     'imagekit',
     'multiselectfield',
     'rest_framework',
     'rest_framework.authtoken',
     'rest_framework_swagger',
     'dbbackup',
-    # 'taggit_serializer',
-    # 'axes'
     'django_celery_results',
     'social_django',
     'drf_yasg2',
+    'tagulous',
 )
 
 # ------------------------------------------------------------------------------
@@ -667,6 +688,7 @@ CELERY_BROKER_URL = env('DD_CELERY_BROKER_URL') \
     env('DD_CELERY_BROKER_HOST'),
     env('DD_CELERY_BROKER_PORT'),
     env('DD_CELERY_BROKER_PATH'),
+    env('DD_CELERY_BROKER_PARAMS')
 )
 CELERY_TASK_IGNORE_RESULT = env('DD_CELERY_TASK_IGNORE_RESULT')
 CELERY_RESULT_BACKEND = env('DD_CELERY_RESULT_BACKEND')
@@ -677,6 +699,8 @@ CELERY_ACCEPT_CONTENT = ['pickle', 'json', 'msgpack', 'yaml']
 CELERY_TASK_SERIALIZER = env('DD_CELERY_TASK_SERIALIZER')
 CELERY_PASS_MODEL_BY_ID = env('DD_CELERY_PASS_MODEL_BY_ID')
 
+CELERY_IMPORTS = ('dojo.tools.tool_issue_updater', )
+
 # Celery beat scheduled tasks
 CELERY_BEAT_SCHEDULE = {
     'add-alerts': {
@@ -684,19 +708,27 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': timedelta(hours=1),
         'args': [timedelta(hours=1)]
     },
+    'cleanup-alerts': {
+        'task': 'dojo.tasks.cleanup_alerts',
+        'schedule': timedelta(hours=8),
+    },
     'dedupe-delete': {
         'task': 'dojo.tasks.async_dupe_delete',
         'schedule': timedelta(minutes=1),
         'args': [timedelta(minutes=1)]
     },
     'update-findings-from-source-issues': {
-        'task': 'dojo.tasks.async_update_findings_from_source_issues',
+        'task': 'dojo.tools.tool_issue_updater.update_findings_from_source_issues',
         'schedule': timedelta(hours=3),
     },
     'compute-sla-age-and-notify': {
         'task': 'dojo.tasks.async_sla_compute_and_notify',
         'schedule': crontab(hour=7, minute=30),
-    }
+    },
+    'risk_acceptance_expiration_handler': {
+        'task': 'dojo.risk_acceptance.helper.expiration_handler',
+        'schedule': crontab(minute=0, hour='*/3'),  # every 3 hours
+    },
 }
 
 # ------------------------------------
@@ -730,9 +762,11 @@ if env('DD_DJANGO_METRICS_ENABLED'):
 HASHCODE_FIELDS_PER_SCANNER = {
     # In checkmarx, same CWE may appear with different severities: example "sql injection" (high) and "blind sql injection" (low).
     # Including the severity in the hash_code keeps those findings not duplicate
+    'Anchore Engine Scan': ['title', 'severity', 'component_name', 'component_version', 'file_path'],
     'Checkmarx Scan': ['cwe', 'severity', 'file_path'],
     'SonarQube Scan': ['cwe', 'severity', 'file_path'],
     'Dependency Check Scan': ['cve', 'file_path'],
+    'Dependency Track Finding Packaging Format (FPF) Export': ['component', 'vuln_id_from_tool'],
     # possible improvment: in the scanner put the library name into file_path, then dedup on cwe + file_path + severity
     'NPM Audit Scan': ['title', 'severity', 'file_path', 'cve', 'cwe'],
     # possible improvment: in the scanner put the library name into file_path, then dedup on cwe + file_path + severity
@@ -749,12 +783,14 @@ HASHCODE_FIELDS_PER_SCANNER = {
     'DSOP Scan': ['cve'],
     'Acunetix Scan': ['title', 'description'],
     'Trivy Scan': ['title', 'severity', 'cve', 'cwe'],
+    'Snyk Scan': ['vuln_id_from_tool', 'file_path', 'component_name', 'component_version'],
 }
 
 # This tells if we should accept cwe=0 when computing hash_code with a configurable list of fields from HASHCODE_FIELDS_PER_SCANNER (this setting doesn't apply to legacy algorithm)
 # If False and cwe = 0, then the hash_code computation will fallback to legacy algorithm for the concerned finding
 # Default is True (if scanner is not configured here but is configured in HASHCODE_FIELDS_PER_SCANNER, it allows null cwe)
 HASHCODE_ALLOWS_NULL_CWE = {
+    'Anchore Engine Scan': True,
     'Checkmarx Scan': False,
     'SonarQube Scan': False,
     'Dependency Check Scan': True,
@@ -771,7 +807,7 @@ HASHCODE_ALLOWS_NULL_CWE = {
 # List of fields that are known to be usable in hash_code computation)
 # 'endpoints' is a pseudo field that uses the endpoints (for dynamic scanners)
 # 'unique_id_from_tool' is often not needed here as it can be used directly in the dedupe algorithm, but it's also possible to use it for hashing
-HASHCODE_ALLOWED_FIELDS = ['title', 'cwe', 'cve', 'line', 'file_path', 'component_name', 'component_version', 'description', 'endpoints', 'unique_id_from_tool', 'severity']
+HASHCODE_ALLOWED_FIELDS = ['title', 'cwe', 'cve', 'line', 'file_path', 'component_name', 'component_version', 'description', 'endpoints', 'unique_id_from_tool', 'severity', 'vuln_id_from_tool']
 
 # ------------------------------------
 # Deduplication configuration
@@ -791,8 +827,10 @@ DEDUPE_ALGO_UNIQUE_ID_FROM_TOOL_OR_HASH_CODE = 'unique_id_from_tool_or_hash_code
 # Key = the scan_type from factory.py (= the test_type)
 # Default is DEDUPE_ALGO_LEGACY
 DEDUPLICATION_ALGORITHM_PER_PARSER = {
+    'Anchore Engine Scan': DEDUPE_ALGO_HASH_CODE,
     'Checkmarx Scan detailed': DEDUPE_ALGO_UNIQUE_ID_FROM_TOOL,
     'Checkmarx Scan': DEDUPE_ALGO_HASH_CODE,
+    'Dependency Track Finding Packaging Format (FPF) Export': DEDUPE_ALGO_HASH_CODE,
     'SonarQube Scan detailed': DEDUPE_ALGO_UNIQUE_ID_FROM_TOOL,
     'SonarQube Scan': DEDUPE_ALGO_HASH_CODE,
     'Dependency Check Scan': DEDUPE_ALGO_HASH_CODE,
@@ -811,7 +849,10 @@ DEDUPLICATION_ALGORITHM_PER_PARSER = {
     'DSOP Scan': DEDUPE_ALGO_HASH_CODE,
     'Trivy Scan': DEDUPE_ALGO_HASH_CODE,
     'HackerOne Cases': DEDUPE_ALGO_UNIQUE_ID_FROM_TOOL_OR_HASH_CODE,
+    'Snyk Scan': DEDUPE_ALGO_HASH_CODE,
 }
+
+DUPE_DELETE_MAX_PER_RUN = env('DD_DUPE_DELETE_MAX_PER_RUN')
 
 DISABLE_FINDING_MERGE = env('DD_DISABLE_FINDING_MERGE')
 
@@ -836,6 +877,11 @@ JIRA_SSL_VERIFY = env('DD_JIRA_SSL_VERIFY')
 # See http://docs.djangoproject.com/en/dev/topics/logging for
 # more details on how to customize your logging configuration.
 LOGGING_HANDLER = env('DD_LOGGING_HANDLER')
+
+LOG_LEVEL = env('DD_LOG_LEVEL')
+if not LOG_LEVEL:
+    LOG_LEVEL = 'DEBUG' if DEBUG else 'INFO'
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -882,24 +928,24 @@ LOGGING = {
         },
         'django.security': {
             'handlers': [r'%s' % LOGGING_HANDLER],
-            'level': 'INFO',
+            'level': '%s' % LOG_LEVEL,
             'propagate': False,
         },
         'celery': {
             'handlers': [r'%s' % LOGGING_HANDLER],
-            'level': 'INFO',
+            'level': '%s' % LOG_LEVEL,
             'propagate': False,
             # workaround some celery logging known issue
             'worker_hijack_root_logger': False,
         },
         'dojo': {
             'handlers': [r'%s' % LOGGING_HANDLER],
-            'level': 'INFO',
+            'level': '%s' % LOG_LEVEL,
             'propagate': False,
         },
         'dojo.specific-loggers.deduplication': {
             'handlers': [r'%s' % LOGGING_HANDLER],
-            'level': 'INFO',
+            'level': '%s' % LOG_LEVEL,
             'propagate': False,
         },
         'MARKDOWN': {
@@ -926,3 +972,22 @@ DATA_UPLOAD_MAX_NUMBER_FIELDS = 10240
 
 # Maximum size of a scan file in MB
 SCAN_FILE_MAX_SIZE = 100
+
+SERIALIZATION_MODULES = {
+    'xml': 'tagulous.serializers.xml_serializer',
+    'json': 'tagulous.serializers.json',
+    'python': 'tagulous.serializers.python',
+    'yaml': 'tagulous.serializers.pyyaml',
+}
+
+# There seems to be no way just use the default and just leave out jquery, so we have to copy...
+# ... and keep it up-to-date.
+TAGULOUS_AUTOCOMPLETE_JS = (
+    # 'tagulous/lib/jquery.js',
+    'tagulous/lib/select2-4/js/select2.full.min.js',
+    'tagulous/tagulous.js',
+    'tagulous/adaptor/select2-4.js',
+)
+
+# using 'element' for width should take width from css defined in template, but it doesn't. So set to 70% here.
+TAGULOUS_AUTOCOMPLETE_SETTINGS = {'placeholder': "Enter some tags (comma separated, use enter to select / create a new tag)", 'width': '70%'}

@@ -6,6 +6,9 @@ from defusedxml import ElementTree
 from dateutil import parser
 import re
 from dojo.models import Finding
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class FortifyXMLParser(object):
@@ -18,9 +21,9 @@ class FortifyXMLParser(object):
         # Get Date
         date_string = root.getchildren()[5].getchildren()[1].getchildren()[2].text
         date_list = date_string.split()[1:4]
-        date_act = "".join(date_list)
+        date_list = [item.replace(',', '') for item in date_list]
+        date_act = ".".join(date_list)
         find_date = parser.parse(date_act)
-
         # Get Language
         lang_string = root[8][4][2].text
         lang_need_string = re.findall("^.*com.fortify.sca.Phase0HigherOrder.Languages.*$",
@@ -62,26 +65,36 @@ class FortifyXMLParser(object):
 
         # All issues obtained, create a map for reference
         issue_map = {}
-        for issue in issues:
-            details = {
-                "Category": issue.find("Category").text,
-                "Folder": issue.find("Folder").text, "Kingdom": issue.find("Kingdom").text,
-                "Abstract": issue.find("Abstract").text,
-                "Friority": issue.find("Friority").text,
-                "FileName": issue.find("Primary").find("FileName").text,
-                "FilePath": issue.find("Primary").find("FilePath").text,
-                "LineStart": issue.find("Primary").find("LineStart").text,
-                "Snippet": issue.find("Primary").find("Snippet").text}
+        issue_id = "N/A"
+        try:
+            for issue in issues:
+                issue_id = issue.attrib['iid']
+                details = {
+                    "Category": issue.find("Category").text,
+                    "Folder": issue.find("Folder").text, "Kingdom": issue.find("Kingdom").text,
+                    "Abstract": issue.find("Abstract").text,
+                    "Friority": issue.find("Friority").text,
+                    "FileName": issue.find("Primary").find("FileName").text,
+                    "FilePath": issue.find("Primary").find("FilePath").text,
+                    "LineStart": issue.find("Primary").find("LineStart").text}
 
-            if issue.find("Source"):
-                source = {
-                    "FileName": issue.find("Source").find("FileName").text,
-                    "FilePath": issue.find("Source").find("FilePath").text,
-                    "LineStart": issue.find("Source").find("LineStart").text,
-                    "Snippet": issue.find("Source").find("Snippet").text}
-                details["Source"] = source
+                if issue.find("Primary").find("Snippet"):
+                    details["Snippet"] = issue.find("Primary").find("Snippet").text
+                else:
+                    details["Snippet"] = "n/a"
 
-            issue_map.update({issue.attrib['iid']: details})
+                if issue.find("Source"):
+                    source = {
+                        "FileName": issue.find("Source").find("FileName").text,
+                        "FilePath": issue.find("Source").find("FilePath").text,
+                        "LineStart": issue.find("Source").find("LineStart").text,
+                        "Snippet": issue.find("Source").find("Snippet").text}
+                    details["Source"] = source
+
+                issue_map.update({issue.attrib['iid']: details})
+        except AttributeError:
+            logger.warning("XML Parsing error on issue number: %s", issue_id)
+            raise
         # map created
 
         self.items = []
